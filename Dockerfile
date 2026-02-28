@@ -17,4 +17,4 @@ COPY vavoo_proxy.py .
 
 EXPOSE 7860
 
-CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "2", "--worker-class", "aiohttp.worker.GunicornWebWorker", "--timeout", "300", "--keepalive", "75", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "2", "--worker-class", "aiohttp.worker.GunicornWebWorker", "--timeout", "300", "app:app"]

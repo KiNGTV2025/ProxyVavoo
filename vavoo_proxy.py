@@ -14,9 +14,8 @@ from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
-# Signature cache (15 dakika geçerli)
 _signature_cache = {"sig": None, "ts": 0}
-SIGNATURE_TTL = 900  # 15 dakika
+SIGNATURE_TTL = 900
 
 PING_HEADERS = {
     "user-agent": "okhttp/4.11.0",
@@ -83,37 +82,42 @@ PING_DATA = {
     "iap": {"supported": False}
 }
 
+PING_URLS = [
+    "https://www.vavoo.tv/api/app/ping",
+    "https://vavoo.to/api/app/ping",
+    "https://vavoo.tv/api/app/ping",
+]
 
-async def get_signature(session: aiohttp.ClientSession) -> str | None:
-    """Vavoo'dan auth signature alır, cache'ler."""
+
+async def get_signature(session: aiohttp.ClientSession):
     now = time.time()
     if _signature_cache["sig"] and (now - _signature_cache["ts"]) < SIGNATURE_TTL:
         return _signature_cache["sig"]
 
-    try:
-        async with session.post(
-            "https://vavoo.to/api/app/ping",
-            json=PING_DATA,
-            headers=PING_HEADERS,
-            timeout=aiohttp.ClientTimeout(total=15)
-        ) as resp:
-            data = await resp.json(content_type=None)
-            sig = data.get("addonSig")
-            if sig:
-                _signature_cache["sig"] = sig
-                _signature_cache["ts"] = now
-                logger.info("✅ Vavoo signature alındı")
-            return sig
-    except Exception as e:
-        logger.error(f"❌ Signature hatası: {e}")
-        return None
+    for ping_url in PING_URLS:
+        try:
+            async with session.post(
+                ping_url,
+                json=PING_DATA,
+                headers=PING_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                data = await resp.json(content_type=None)
+                sig = data.get("addonSig")
+                if sig:
+                    _signature_cache["sig"] = sig
+                    _signature_cache["ts"] = now
+                    logger.info(f"✅ Signature alındı: {ping_url}")
+                    return sig
+        except Exception as e:
+            logger.warning(f"⚠️ {ping_url} → {e}")
+            continue
+
+    logger.error("❌ Hiçbir ping URL çalışmadı")
+    return None
 
 
-async def resolve_vavoo_stream(session: aiohttp.ClientSession, vavoo_url: str) -> str | None:
-    """
-    Vavoo play URL'sini gerçek stream URL'sine çevirir.
-    Önce HEAD/GET ile redirect takip eder.
-    """
+async def resolve_vavoo_stream(session: aiohttp.ClientSession, vavoo_url: str):
     signature = await get_signature(session)
     if not signature:
         return None
@@ -126,7 +130,6 @@ async def resolve_vavoo_stream(session: aiohttp.ClientSession, vavoo_url: str) -
     }
 
     try:
-        # Vavoo play URL'si redirect veriyor
         async with session.get(
             vavoo_url,
             headers=headers,
@@ -150,7 +153,7 @@ CORS_HEADERS = {
 
 class VavooProxy:
     def __init__(self):
-        self.session: aiohttp.ClientSession | None = None
+        self.session = None
 
     async def get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -162,11 +165,9 @@ class VavooProxy:
         if self.session and not self.session.closed:
             await self.session.close()
 
-    # ── OPTIONS ──────────────────────────────────────────────────────────────
     async def handle_options(self, request: web.Request) -> web.Response:
         return web.Response(status=200, headers=CORS_HEADERS)
 
-    # ── Ana sayfa ─────────────────────────────────────────────────────────────
     async def handle_root(self, request: web.Request) -> web.Response:
         html = """<!DOCTYPE html>
 <html><head><title>Vavoo Proxy</title></head>
@@ -178,13 +179,20 @@ class VavooProxy:
   <li><b>/vavoo/resolve?url=&lt;vavoo_play_url&gt;</b> — Gerçek URL'yi döner</li>
   <li><b>/vavoo/m3u?url=&lt;vavoo_play_url&gt;</b> — M3U wrapper döner</li>
   <li><b>/proxy/manifest.m3u8?url=&lt;vavoo_play_url&gt;</b> — HLS proxy</li>
+  <li><b>/vavoo/sig</b> — Signature test</li>
 </ul>
 <h3>Örnek:</h3>
 <code>/vavoo/stream?url=https://vavoo.to/vavoo-iptv/play/267105889a25a483e5e80</code>
 </body></html>"""
         return web.Response(text=html, content_type="text/html", headers=CORS_HEADERS)
 
-    # ── Resolve: sadece URL döner ─────────────────────────────────────────────
+    async def handle_sig_test(self, request: web.Request) -> web.Response:
+        session = await self.get_session()
+        sig = await get_signature(session)
+        if sig:
+            return web.Response(text=f"✅ Signature OK: {sig[:30]}...", headers=CORS_HEADERS)
+        return web.Response(status=502, text="❌ Signature alınamadı", headers=CORS_HEADERS)
+
     async def handle_resolve(self, request: web.Request) -> web.Response:
         url = request.query.get("url", "").strip()
         if not url:
@@ -198,21 +206,17 @@ class VavooProxy:
 
         return web.Response(text=resolved, content_type="text/plain", headers=CORS_HEADERS)
 
-    # ── M3U wrapper ───────────────────────────────────────────────────────────
     async def handle_m3u(self, request: web.Request) -> web.Response:
         url = request.query.get("url", "").strip()
         if not url:
             return web.Response(status=400, text="?url= parametresi gerekli", headers=CORS_HEADERS)
 
-        # Proxy URL'si oluştur
         base = str(request.url.origin())
         stream_url = f"{base}/vavoo/stream?url={url}"
-
         m3u = f"#EXTM3U\n#EXTINF:-1,Vavoo Stream\n{stream_url}\n"
         headers = {**CORS_HEADERS, "Content-Type": "application/x-mpegurl"}
         return web.Response(text=m3u, headers=headers)
 
-    # ── Ana proxy: stream'i ilet ──────────────────────────────────────────────
     async def handle_stream(self, request: web.Request) -> web.StreamResponse:
         url = request.query.get("url", "").strip()
         if not url:
@@ -230,7 +234,6 @@ class VavooProxy:
             "referer": "https://vavoo.to/",
         }
 
-        # Range header iletimi
         if "Range" in request.headers:
             req_headers["Range"] = request.headers["Range"]
 
@@ -241,7 +244,6 @@ class VavooProxy:
                 allow_redirects=True,
                 timeout=aiohttp.ClientTimeout(total=60, connect=15)
             ) as upstream:
-
                 status = upstream.status
                 content_type = upstream.headers.get("Content-Type", "video/MP2T")
 
@@ -272,15 +274,5 @@ class VavooProxy:
             logger.error(f"❌ Stream hatası: {e}")
             return web.Response(status=502, text=f"Proxy hatası: {e}", headers=CORS_HEADERS)
 
-    # ── /proxy/manifest.m3u8 compat ───────────────────────────────────────────
     async def handle_manifest(self, request: web.Request) -> web.StreamResponse:
-        """EasyProxy compat endpoint — /proxy/manifest.m3u8?url=<vavoo_url>"""
         return await self.handle_stream(request)
-async def handle_sig_test(self, request):
-    session = await self.get_session()
-    sig = await get_signature(session)
-    if sig:
-        return web.Response(text=f"✅ Signature OK: {sig[:30]}...", headers=CORS_HEADERS)
-    return web.Response(status=502, text="❌ Signature alınamadı", headers=CORS_HEADERS)
-
-

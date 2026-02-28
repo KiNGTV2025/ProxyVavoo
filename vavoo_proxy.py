@@ -276,3 +276,11 @@ class VavooProxy:
     async def handle_manifest(self, request: web.Request) -> web.StreamResponse:
         """EasyProxy compat endpoint — /proxy/manifest.m3u8?url=<vavoo_url>"""
         return await self.handle_stream(request)
+async def handle_sig_test(self, request):
+    session = await self.get_session()
+    sig = await get_signature(session)
+    if sig:
+        return web.Response(text=f"✅ Signature OK: {sig[:30]}...", headers=CORS_HEADERS)
+    return web.Response(status=502, text="❌ Signature alınamadı", headers=CORS_HEADERS)
+
+

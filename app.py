@@ -36,7 +36,7 @@ def create_app():
     app.router.add_get('/proxy/hls/manifest.m3u8', proxy.handle_manifest)
     app.router.add_get('/proxy/stream',            proxy.handle_stream)
     app.router.add_get('/proxy/m3u',               proxy.handle_m3u)   # 405 sorunu çözüldü!
-
+    app.router.add_get('/vavoo/sig',               proxy.handle_sig_test)  # ← bunu ekle
     # CORS OPTIONS
     app.router.add_route('OPTIONS', '/{tail:.*}', proxy.handle_options)
 

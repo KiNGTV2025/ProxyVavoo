@@ -92,7 +92,7 @@ async def get_signature(session: aiohttp.ClientSession) -> str | None:
 
     try:
         async with session.post(
-            "https://www.vavoo.tv/api/app/ping",
+            "https://vavoo.to/api/app/ping",
             json=PING_DATA,
             headers=PING_HEADERS,
             timeout=aiohttp.ClientTimeout(total=15)
